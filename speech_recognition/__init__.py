@@ -86,8 +86,9 @@ class Microphone(AudioSource):
                 device_info = audio.get_device_info_by_index(device_index) if device_index is not None else audio.get_default_input_device_info()
                 assert isinstance(device_info.get("defaultSampleRate"), (float, int)) and device_info["defaultSampleRate"] > 0, "Invalid device info returned from PyAudio: {}".format(device_info)
                 sample_rate = int(device_info["defaultSampleRate"])
-        finally:
+        except Exception:
             audio.terminate()
+            raise
 
         self.device_index = device_index
         self.format = self.pyaudio_module.paInt16  # 16-bit int sampling
@@ -117,7 +118,7 @@ class Microphone(AudioSource):
         """
         Returns a list of the names of all available microphones. For microphones where the name can't be retrieved, the list entry contains ``None`` instead.
 
-        The index of each microphone's name in the returned list is the same as its device index when creating a ``Microphone`` instance - if you want to use the microphone at index 3 in the returned list, use ``Microphone(device_index=3)``.
+        The index of each microphone's name is the same as its device index when creating a ``Microphone`` instance - indices in this list can be used as values of ``device_index``.
         """
         audio = Microphone.get_pyaudio().PyAudio()
         try:
@@ -129,58 +130,20 @@ class Microphone(AudioSource):
             audio.terminate()
         return result
 
-    @staticmethod
-    def list_working_microphones():
-        """
-        Returns a dictionary mapping device indices to microphone names, for microphones that are currently hearing sounds. When using this function, ensure that your microphone is unmuted and make some noise at it to ensure it will be detected as working.
-
-        Each key in the returned dictionary can be passed to the ``Microphone`` constructor to use that microphone. For example, if the return value is ``{3: "HDA Intel PCH: ALC3232 Analog (hw:1,0)"}``, you can do ``Microphone(device_index=3)`` to use that microphone.
-        """
-        pyaudio_module = Microphone.get_pyaudio()
-        audio = pyaudio_module.PyAudio()
-        try:
-            result = {}
-            for device_index in range(audio.get_device_count()):
-                device_info = audio.get_device_info_by_index(device_index)
-                device_name = device_info.get("name")
-                assert isinstance(device_info.get("defaultSampleRate"), (float, int)) and device_info["defaultSampleRate"] > 0, "Invalid device info returned from PyAudio: {}".format(device_info)
-                try:
-                    # read audio
-                    pyaudio_stream = audio.open(
-                        input_device_index=device_index, channels=1, format=pyaudio_module.paInt16,
-                        rate=int(device_info["defaultSampleRate"]), input=True
-                    )
-                    try:
-                        buffer = pyaudio_stream.read(1024)
-                        if not pyaudio_stream.is_stopped(): pyaudio_stream.stop_stream()
-                    finally:
-                        pyaudio_stream.close()
-                except Exception:
-                    continue
-
-                # compute RMS of debiased audio
-                energy = -audioop.rms(buffer, 2)
-                energy_bytes = chr(energy & 0xFF) + chr((energy >> 8) & 0xFF) if bytes is str else bytes([energy & 0xFF, (energy >> 8) & 0xFF])  # Python 2 compatibility
-                debiased_energy = audioop.rms(audioop.add(buffer, energy_bytes * (len(buffer) // 2), 2), 2)
-
-                if debiased_energy > 30:  # probably actually audio
-                    result[device_index] = device_name
-        finally:
-            audio.terminate()
-        return result
-
     def __enter__(self):
         assert self.stream is None, "This audio source is already inside a context manager"
         self.audio = self.pyaudio_module.PyAudio()
         try:
             self.stream = Microphone.MicrophoneStream(
                 self.audio.open(
-                    input_device_index=self.device_index, channels=1, format=self.format,
-                    rate=self.SAMPLE_RATE, frames_per_buffer=self.CHUNK, input=True,
+                    input_device_index=self.device_index, channels=1,
+                    format=self.format, rate=self.SAMPLE_RATE, frames_per_buffer=self.CHUNK,
+                    input=True,  # stream is an input stream
                 )
             )
-        finally:
+        except Exception:
             self.audio.terminate()
+            raise
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -958,7 +921,7 @@ class Recognizer(AudioSource):
 
         speech_config = {"encoding": "FLAC", "sampleRateHertz": audio_data.sample_rate, "languageCode": language}
         if preferred_phrases is not None:
-            speech_config["speechContexts"] = [{"phrases": preferred_phrases}]
+            speech_config["speechContext"] = {"phrases": preferred_phrases}
         if show_all:
             speech_config["enableWordTimeOffsets"] = True  # some useful extra options for when we want all the output
         request = speech_service.speech().recognize(body={"audio": {"content": base64.b64encode(flac_data).decode("utf8")}, "config": speech_config})
@@ -1213,53 +1176,6 @@ class Recognizer(AudioSource):
                 if "transcript" in hypothesis:
                     transcription.append(hypothesis["transcript"])
         return "\n".join(transcription)
-
-    lasttfgraph = ''
-    tflabels = None
-
-    def recognize_tensorflow(self, audio_data, tensor_graph='tensorflow-data/conv_actions_frozen.pb', tensor_label='tensorflow-data/conv_actions_labels.txt'):
-        """
-        Performs speech recognition on ``audio_data`` (an ``AudioData`` instance).
-
-        Path to Tensor loaded from ``tensor_graph``. You can download a model here: http://download.tensorflow.org/models/speech_commands_v0.01.zip
-
-        Path to Tensor Labels file loaded from ``tensor_label``.
-        """
-        assert isinstance(audio_data, AudioData), "Data must be audio data"
-        assert isinstance(tensor_graph, str), "``tensor_graph`` must be a string"
-        assert isinstance(tensor_label, str), "``tensor_label`` must be a string"
-
-        try:
-            import tensorflow as tf
-        except ImportError:
-            raise RequestError("missing tensorflow module: ensure that tensorflow is set up correctly.")
-
-        if not (tensor_graph == self.lasttfgraph):
-            self.lasttfgraph = tensor_graph
-
-            # load graph
-            with tf.gfile.FastGFile(tensor_graph, 'rb') as f:
-                graph_def = tf.GraphDef()
-                graph_def.ParseFromString(f.read())
-                tf.import_graph_def(graph_def, name='')
-            # load labels
-            self.tflabels = [line.rstrip() for line in tf.gfile.GFile(tensor_label)]
-
-        wav_data = audio_data.get_wav_data(
-            convert_rate=16000, convert_width=2
-        )
-
-        with tf.Session() as sess:
-            input_layer_name = 'wav_data:0'
-            output_layer_name = 'labels_softmax:0'
-            softmax_tensor = sess.graph.get_tensor_by_name(output_layer_name)
-            predictions, = sess.run(softmax_tensor, {input_layer_name: wav_data})
-
-            # Sort labels in order of confidence
-            top_k = predictions.argsort()[-1:][::-1]
-            for node_id in top_k:
-                human_string = self.tflabels[node_id]
-                return human_string
 
 
 def get_flac_converter():
