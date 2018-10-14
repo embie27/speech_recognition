@@ -609,7 +609,6 @@ class Recognizer(AudioSource):
 
             # run Snowboy on the resampled audio
             snowboy_result = detector.RunDetection(b"".join(resampled_frames))
-            print snowboy_result
             assert snowboy_result != -1, "Error initializing streams or reading audio data"
             if snowboy_result > 0: break  # wake word found
 
