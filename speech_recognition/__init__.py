@@ -664,7 +664,7 @@ class Recognizer(AudioSource):
                     # detect whether speaking has started on audio input
                     energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # energy of the audio signal
                     if energy > self.energy_threshold: 
-                        print "Speech started!"
+                        print("Speech started!")
                         break
 
                     # dynamically adjust the energy threshold using asymmetric weighted average
@@ -696,13 +696,13 @@ class Recognizer(AudioSource):
 
                 # check if speaking has stopped for longer than the pause threshold on the audio input
                 energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # unit energy of the audio signal within the buffer
-                print str(energy) + " < " + str(self.energy_threshold)
+                print(str(energy) + " < " + str(self.energy_threshold))
                 if energy > self.energy_threshold:
                     pause_count = 0
                 else:
                     pause_count += 1
                 if pause_count > pause_buffer_count:  # end of the phrase
-                    print "Speech ended!"
+                    print("Speech ended!")
                     break
 
             # check how long the detected phrase is, and retry listening if the phrase is too short
