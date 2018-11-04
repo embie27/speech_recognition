@@ -601,16 +601,23 @@ class Recognizer(AudioSource):
 
             buffer = source.stream.read(source.CHUNK)
             if len(buffer) == 0: break  # reached end of the stream
-            frames.append(buffer)
+            energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # energy of the audio signal
+            if energy > self.energy_threshold:
+                frames.append(buffer)
 
-            # resample audio to the required sample rate
-            resampled_buffer, resampling_state = audioop.ratecv(buffer, source.SAMPLE_WIDTH, 1, source.SAMPLE_RATE, snowboy_sample_rate, resampling_state)
-            resampled_frames.append(resampled_buffer)
+                # resample audio to the required sample rate
+                if source.SAMPLE_RATE != snowboy_sample_rate:
+                    resampled_buffer, resampling_state = audioop.ratecv(buffer, source.SAMPLE_WIDTH, 1,
+                                                                        source.SAMPLE_RATE, snowboy_sample_rate,
+                                                                        resampling_state)
+                    resampled_frames.append(resampled_buffer)
+                else:
+                    resampled_frames.append(buffer)
 
-            # run Snowboy on the resampled audio
-            snowboy_result = detector.RunDetection(b"".join(resampled_frames))
-            assert snowboy_result != -1, "Error initializing streams or reading audio data"
-            if snowboy_result > 0: break  # wake word found
+                # run Snowboy on the resampled audio
+                snowboy_result = detector.RunDetection(b"".join(resampled_frames))
+                assert snowboy_result != -1, "Error initializing streams or reading audio data"
+                if snowboy_result > 0: break  # wake word found
 
         return b"".join(frames), elapsed_time
 
