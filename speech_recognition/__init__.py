@@ -583,7 +583,7 @@ class Recognizer(AudioSource):
             model_str=",".join(snowboy_hot_word_files).encode()
         )
         detector.SetAudioGain(1.0)
-        detector.SetSensitivity(",".join(["0.4"] * len(snowboy_hot_word_files)).encode())
+        detector.SetSensitivity(",".join(["0.5"] * len(snowboy_hot_word_files)).encode())
         snowboy_sample_rate = detector.SampleRate()
 
         elapsed_time = 0
@@ -670,7 +670,7 @@ class Recognizer(AudioSource):
 
                     # detect whether speaking has started on audio input
                     energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # energy of the audio signal
-                    if energy > self.energy_threshold: 
+                    if energy > self.energy_threshold:
                         print("Speech started!")
                         break
 
@@ -759,7 +759,7 @@ class Recognizer(AudioSource):
         """ Init a Decoder for sphinx to speed up decoding process. """
         assert isinstance(language, str) or (isinstance(language, tuple) and len(language) == 3), "``language`` must be a string or 3-tuple of Sphinx data file paths of the form ``(acoustic_parameters, language_model, phoneme_dictionary)``"
 
-        
+
         # import the PocketSphinx speech recognition module
         try:
             from pocketsphinx import pocketsphinx
@@ -794,8 +794,9 @@ class Recognizer(AudioSource):
         config.set_string("-dict", phoneme_dictionary_file)
         config.set_string("-logfn", os.devnull)  # disable logging (logging causes unwanted output in terminal)
         self._sphinx_decoder = pocketsphinx.Decoder(config)
+        print()
 
-    def recognize_sphinx(self, audio_data, language="en-US", keyword_entries=None, grammar=None, show_all=False):
+    def recognize_sphinx(self, audio_data, language="en-US", keyword_entries=None, grammar=None, rule_name=None, show_all=False):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using CMU Sphinx.
 
@@ -822,7 +823,7 @@ class Recognizer(AudioSource):
 
         if not self._sphinx_decoder:
             self.init_sphinx(language)
-        
+
         # obtain audio data
         raw_data = audio_data.get_raw_data(convert_rate=16000, convert_width=2)  # the included language models require audio to be 16-bit mono 16 kHz in little-endian format
 
@@ -844,10 +845,12 @@ class Recognizer(AudioSource):
                 raise ValueError("Grammar '{0}' does not exist.".format(grammar))
             grammar_path = os.path.abspath(os.path.dirname(grammar))
             grammar_name = os.path.splitext(os.path.basename(grammar))[0]
-            fsg_path = "{0}/{1}.fsg".format(grammar_path, grammar_name)
+            fsg_path = "{0}/{1}/{2}.fsg".format(grammar_path, grammar_name, rule_name if rule_name else grammar_name)
             if not os.path.exists(fsg_path):  # create FSG grammar if not available
+                if not os.path.exists("{0}/{1}".format(grammar_path, grammar_name)):
+                    os.makedirs("{0}/{1}".format(grammar_path, grammar_name))
                 jsgf = Jsgf(grammar)
-                rule = jsgf.get_rule("{0}.{0}".format(grammar_name))
+                rule = jsgf.get_rule("{0}.{1}".format(grammar_name, rule_name if rule_name else grammar_name))
                 fsg = jsgf.build_fsg(rule, self._sphinx_decoder.get_logmath(), 7.5)
                 fsg.writefile(fsg_path)
             else:
@@ -1341,3 +1344,4 @@ def recognize_api(self, audio_data, client_access_token, language="en", session_
 
 
 Recognizer.recognize_api = classmethod(recognize_api)  # API.AI Speech Recognition is deprecated/not recommended as of 3.5.0, and currently is only optionally available for paid plans
+
