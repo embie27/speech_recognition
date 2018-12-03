@@ -622,7 +622,6 @@ class Recognizer(AudioSource):
                 # run Snowboy on the resampled audio
                 snowboy_result = detector.RunDetection(b"".join(resampled_frames))
                 assert snowboy_result != -1, "Error initializing streams or reading audio data"
-                print(snowboy_result)
                 if snowboy_result > 0:
                     break  # wake word found
 
@@ -721,7 +720,6 @@ class Recognizer(AudioSource):
 
                 # check if speaking has stopped for longer than the pause threshold on the audio input
                 energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # unit energy of the audio signal within the buffer
-                print(str(energy) + " < " + str(self.energy_threshold))
                 if energy > self.energy_threshold:
                     pause_count = 0
                 else:
