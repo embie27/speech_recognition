@@ -583,7 +583,7 @@ class Recognizer(AudioSource):
             model_str=",".join(snowboy_hot_word_files).encode()
         )
         detector.SetAudioGain(1.0)
-        detector.SetSensitivity(",".join(["0.5"] * len(snowboy_hot_word_files)).encode())
+        detector.SetSensitivity(",".join(["0.4"] * len(snowboy_hot_word_files)).encode())
         snowboy_sample_rate = detector.SampleRate()
 
         elapsed_time = 0
@@ -594,6 +594,10 @@ class Recognizer(AudioSource):
         five_seconds_buffer_count = int(math.ceil(5 / seconds_per_buffer))
         frames = collections.deque(maxlen=five_seconds_buffer_count)
         resampled_frames = collections.deque(maxlen=five_seconds_buffer_count)
+        started = False
+        pause_count = 0
+        pause_buffer_count = int(math.ceil(
+        self.pause_threshold / seconds_per_buffer))  # number of buffers of non-speaking audio during a phrase, before the phrase should be considered complete
         while True:
             elapsed_time += seconds_per_buffer
             if timeout and elapsed_time > timeout:
@@ -602,7 +606,8 @@ class Recognizer(AudioSource):
             buffer = source.stream.read(source.CHUNK)
             if len(buffer) == 0: break  # reached end of the stream
             energy = audioop.rms(buffer, source.SAMPLE_WIDTH)  # energy of the audio signal
-            if energy > self.energy_threshold:
+            if energy > self.energy_threshold or started:
+                started = True
                 frames.append(buffer)
 
                 # resample audio to the required sample rate
@@ -617,7 +622,20 @@ class Recognizer(AudioSource):
                 # run Snowboy on the resampled audio
                 snowboy_result = detector.RunDetection(b"".join(resampled_frames))
                 assert snowboy_result != -1, "Error initializing streams or reading audio data"
-                if snowboy_result > 0: break  # wake word found
+                print(snowboy_result)
+                if snowboy_result > 0:
+                    break  # wake word found
+
+                pause_count += 1
+                if pause_count > pause_buffer_count:  # end of the phrase
+                    pause_count = 0
+                    started = False
+
+            # dynamically adjust the energy threshold using asymmetric weighted average
+            if self.dynamic_energy_threshold:
+                damping = self.dynamic_energy_adjustment_damping ** seconds_per_buffer  # account for different chunk sizes and rates
+                target_energy = energy * self.dynamic_energy_ratio
+                self.energy_threshold = self.energy_threshold * damping + target_energy * (1 - damping)
 
         return b"".join(frames), elapsed_time
 
