@@ -857,16 +857,20 @@ class Recognizer(AudioSource):
                 self._sphinx_decoder.process_raw(raw_data, False, True)  # process audio data with recognition enabled (no_search = False), as a full utterance (full_utt = True)
                 self._sphinx_decoder.end_utt()  # stop utterance processing
         elif grammar is not None:  # a path to a FSG or JSGF grammar
-            if not os.path.exists(grammar):
+            if not isinstance(grammar, tuple):
+                grammar = (grammar,)
+            if not os.path.exists(grammar[0]):
                 raise ValueError("Grammar '{0}' does not exist.".format(grammar))
-            grammar_path = os.path.abspath(os.path.dirname(grammar))
-            grammar_name = os.path.splitext(os.path.basename(grammar))[0]
-            fsg_path = "{0}/{1}/{2}.fsg".format(grammar_path, grammar_name, rule_name if rule_name else grammar_name)
+            grammar_path = os.path.abspath(os.path.dirname(grammar[0]))
+            grammar_name = grammar[1] if len(grammar) >= 2 and grammar[1] \
+                else os.path.splitext(os.path.basename(grammar[0]))[0]
+            rule_name = grammar[2] if len(grammar) >= 3 and grammar[2] else grammar_name
+            fsg_path = "{0}/{1}/{2}.fsg".format(grammar_path, grammar_name, rule_name)
             if not os.path.exists(fsg_path):  # create FSG grammar if not available
                 if not os.path.exists("{0}/{1}".format(grammar_path, grammar_name)):
                     os.makedirs("{0}/{1}".format(grammar_path, grammar_name))
-                jsgf = Jsgf(grammar)
-                rule = jsgf.get_rule("{0}.{1}".format(grammar_name, rule_name if rule_name else grammar_name))
+                jsgf = Jsgf(grammar[0])
+                rule = jsgf.get_rule("{0}.{1}".format(grammar_name, rule_name))
                 fsg = jsgf.build_fsg(rule, self._sphinx_decoder.get_logmath(), 7.5)
                 fsg.writefile(fsg_path)
             else:
