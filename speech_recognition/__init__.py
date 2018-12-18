@@ -183,6 +183,20 @@ class Microphone(AudioSource):
             audio.terminate()
         return result
 
+    def __enter__(self):
+        assert self.stream is None, "This audio source is already inside a context manager"
+        self.audio = self.pyaudio_module.PyAudio()
+        try:
+            self.stream = Microphone.MicrophoneStream(
+                self.audio.open(
+                    input_device_index=self.device_index, channels=1, format=self.format,
+                    rate=self.SAMPLE_RATE, frames_per_buffer=self.CHUNK, input=True,
+                )
+            )
+        except Exception:
+            self.audio.terminate()
+        return self
+
     def __exit__(self, exc_type, exc_value, traceback):
         try:
             self.stream.close()
@@ -590,10 +604,15 @@ class Recognizer(AudioSource):
         seconds_per_buffer = float(source.CHUNK) / source.SAMPLE_RATE
         resampling_state = None
 
-        # buffers capable of holding 5 seconds of original and resampled audio
-        two_seconds_buffer_count = int(math.ceil(2 / seconds_per_buffer))
-        frames = collections.deque(maxlen=two_seconds_buffer_count)
-        resampled_frames = collections.deque(maxlen=two_seconds_buffer_count)
+        # buffers capable of holding 5 seconds of original audio
+        five_seconds_buffer_count = int(math.ceil(5 / seconds_per_buffer))
+        # buffers capable of holding 0.5 seconds of resampled audio
+        half_second_buffer_count = int(math.ceil(0.5 / seconds_per_buffer))
+        frames = collections.deque(maxlen=five_seconds_buffer_count)
+        resampled_frames = collections.deque(maxlen=half_second_buffer_count)
+        # snowboy check interval
+        check_interval = 0.05
+        last_check = time.time()
         while True:
             elapsed_time += seconds_per_buffer
             if timeout and elapsed_time > timeout:
@@ -606,11 +625,13 @@ class Recognizer(AudioSource):
             # resample audio to the required sample rate
             resampled_buffer, resampling_state = audioop.ratecv(buffer, source.SAMPLE_WIDTH, 1, source.SAMPLE_RATE, snowboy_sample_rate, resampling_state)
             resampled_frames.append(resampled_buffer)
-
-            # run Snowboy on the resampled audio
-            snowboy_result = detector.RunDetection(b"".join(resampled_frames))
-            assert snowboy_result != -1, "Error initializing streams or reading audio data"
-            if snowboy_result > 0: break  # wake word found
+            if time.time() - last_check > check_interval:
+                # run Snowboy on the resampled audio
+                snowboy_result = detector.RunDetection(b"".join(resampled_frames))
+                assert snowboy_result != -1, "Error initializing streams or reading audio data"
+                if snowboy_result > 0: break  # wake word found
+                resampled_frames.clear()
+                last_check = time.time()
 
         return b"".join(frames), elapsed_time
 
@@ -868,7 +889,7 @@ class Recognizer(AudioSource):
         if hypothesis is not None: return hypothesis.hypstr
         raise UnknownValueError()  # no transcriptions available
 
-    def recognize_google(self, audio_data, key=None, language="en-US", show_all=False):
+    def recognize_google(self, audio_data, key=None, language="en-US", pfilter=0, show_all=False):
         """
         Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the Google Speech Recognition API.
 
@@ -877,7 +898,9 @@ class Recognizer(AudioSource):
         To obtain your own API key, simply following the steps on the `API Keys <http://www.chromium.org/developers/how-tos/api-keys>`__ page at the Chromium Developers site. In the Google Developers Console, Google Speech Recognition is listed as "Speech API".
 
         The recognition language is determined by ``language``, an RFC5646 language tag like ``"en-US"`` (US English) or ``"fr-FR"`` (International French), defaulting to US English. A list of supported language tags can be found in this `StackOverflow answer <http://stackoverflow.com/a/14302134>`__.
-
+        
+        The profanity filter level can be adjusted with ``pfilter``: 0 - No filter, 1 - Only shows the first character and replaces the rest with asterisks. The default is level 0.
+        
         Returns the most likely transcription if ``show_all`` is false (the default). Otherwise, returns the raw API response as a JSON dictionary.
 
         Raises a ``speech_recognition.UnknownValueError`` exception if the speech is unintelligible. Raises a ``speech_recognition.RequestError`` exception if the speech recognition operation failed, if the key isn't valid, or if there is no internet connection.
@@ -895,6 +918,7 @@ class Recognizer(AudioSource):
             "client": "chromium",
             "lang": language,
             "key": key,
+            "pFilter": pfilter
         }))
         request = Request(url, data=flac_data, headers={"Content-Type": "audio/x-flac; rate={}".format(audio_data.sample_rate)})
 
@@ -1025,7 +1049,7 @@ class Recognizer(AudioSource):
             convert_rate=None if audio_data.sample_rate >= 8000 else 8000,  # audio samples must be at least 8 kHz
             convert_width=2  # audio samples should be 16-bit
         )
-        url = "https://api.wit.ai/speech?v=20160526"
+        url = "https://api.wit.ai/speech?v=20170307"
         request = Request(url, data=wav_data, headers={"Authorization": "Bearer {}".format(key), "Content-Type": "audio/wav"})
         try:
             response = urlopen(request, timeout=self.operation_timeout)
@@ -1133,6 +1157,40 @@ class Recognizer(AudioSource):
         if show_all: return result
         if "RecognitionStatus" not in result or result["RecognitionStatus"] != "Success" or "DisplayText" not in result: raise UnknownValueError()
         return result["DisplayText"]
+
+    def recognize_lex(self, audio_data, bot_name, bot_alias, user_id, content_type="audio/l16; rate=16000; channels=1", access_key_id=None, secret_access_key=None, region=None):
+        """
+        Performs speech recognition on ``audio_data`` (an ``AudioData`` instance), using the Amazon Lex API.
+
+        If access_key_id or secret_access_key is not set it will go through the list in the link below
+        http://boto3.readthedocs.io/en/latest/guide/configuration.html#configuring-credentials
+        """
+        assert isinstance(audio_data, AudioData), "Data must be audio data"
+        assert isinstance(bot_name, str), "``bot_name`` must be a string"
+        assert isinstance(bot_alias, str), "``bot_alias`` must be a string"
+        assert isinstance(user_id, str), "``user_id`` must be a string"
+        assert isinstance(content_type, str), "``content_type`` must be a string"
+        assert access_key_id is None or isinstance(access_key_id, str), "``access_key_id`` must be a string"
+        assert secret_access_key is None or isinstance(secret_access_key, str), "``secret_access_key`` must be a string"
+        assert region is None or isinstance(region, str), "``region`` must be a string"
+
+        try:
+            import boto3
+        except ImportError:
+            raise RequestError("missing boto3 module: ensure that boto3 is set up correctly.")
+
+        client = boto3.client('lex-runtime', aws_access_key_id=access_key_id,
+                              aws_secret_access_key=secret_access_key,
+                              region_name=region)
+
+        raw_data = audio_data.get_raw_data(
+            convert_rate=16000, convert_width=2
+        )
+
+        accept = "text/plain; charset=utf-8"
+        response = client.post_content(botName=bot_name, botAlias=bot_alias, userId=user_id, contentType=content_type, accept=accept, inputStream=raw_data)
+
+        return response["inputTranscript"]
 
     def recognize_houndify(self, audio_data, client_id, client_key, show_all=False):
         """
