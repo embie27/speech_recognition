@@ -586,7 +586,7 @@ class Recognizer(AudioSource):
             target_energy = energy * self.dynamic_energy_ratio
             self.energy_threshold = self.energy_threshold * damping + target_energy * (1 - damping)
 
-    def snowboy_wait_for_hot_word(self, snowboy_location, snowboy_hot_word_files, source, timeout=None):
+    def snowboy_wait_for_hot_word(self, snowboy_location, snowboy_hot_word_files, source, timeout=None, abort=lambda: False):
         # load snowboy library (NOT THREAD SAFE)
         sys.path.append(snowboy_location)
         import snowboydetect
@@ -626,6 +626,8 @@ class Recognizer(AudioSource):
             resampled_buffer, resampling_state = audioop.ratecv(buffer, source.SAMPLE_WIDTH, 1, source.SAMPLE_RATE, snowboy_sample_rate, resampling_state)
             resampled_frames.append(resampled_buffer)
             if time.time() - last_check > check_interval:
+                if abort():
+                    return None
                 # run Snowboy on the resampled audio
                 snowboy_result = detector.RunDetection(b"".join(resampled_frames))
                 assert snowboy_result != -1, "Error initializing streams or reading audio data"
